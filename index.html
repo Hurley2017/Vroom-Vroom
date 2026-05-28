@@ -232,21 +232,81 @@
         const infoBox = document.getElementById('infoBox');
 
         let audioContext;
-        let oscillators = [];
-        let gainNodes = [];
+        let engineOscillators = [];
+        let engineGains = [];
+        let mechanicalGain;
         let masterGain;
+        let backfireGain;
         let isEngineRunning = false;
         
         // Motion tracking
         let currentAcceleration = 0;
         let currentRotation = 0;
         let motionIntensity = 0;
-        let smoothedRPM = 0;
+        let smoothedRPM = 1200; // Start at idle RPM
+        let previousRPM = 1200;
+        let currentGear = 1;
 
-        // Constants
-        const BASE_FREQUENCY = 150; // Hz - fundamental engine frequency
-        const UPDATE_RATE = 50; // ms
-        const MOTION_SMOOTH = 0.3; // Low-pass filter factor
+        // Engine Constants - 4-Cylinder Mid-Stroke Engine
+        const MIN_RPM = 1200;     // Idle RPM
+        const MAX_RPM = 8000;     // Red line RPM
+        const RPM_RANGE = MAX_RPM - MIN_RPM;
+        const UPDATE_RATE = 50;   // ms
+        const MOTION_SMOOTH = 0.2; // Lower = more responsive
+        const RPM_ACCELERATION = 0.08; // How fast RPM climbs
+        const RPM_DECELERATION = 0.06; // How fast RPM drops
+        const BACKFIRE_THRESHOLD = 0.3; // Motion threshold for backfire
+        
+        // Gear ratios - affects sound tone and responsiveness
+        const GEAR_RATIOS = {
+            1: { freqMultiplier: 0.85, volumeBoost: 1.1, torque: 1.3 },
+            2: { freqMultiplier: 0.95, volumeBoost: 1.0, torque: 1.1 },
+            3: { freqMultiplier: 1.0,  volumeBoost: 0.9, torque: 1.0 },
+            4: { freqMultiplier: 1.05, volumeBoost: 0.85, torque: 0.9 },
+            5: { freqMultiplier: 1.12, volumeBoost: 0.8, torque: 0.8 }
+        };
+
+        // Base frequencies for 4-cylinder engine (fire order adds personality)
+        const BASE_FREQUENCIES = {
+            fundamental: 120,  // Main engine note
+            harmonic2: 240,    // 2x harmonic
+            harmonic3: 360,    // 3x harmonic
+            subBass: 60,       // Deep rumble
+            firing: 200        // Firing frequency (4-cyl = 2x crankshaft)
+        };
+
+        let lastBackfireTime = 0;
+        let backfireChance = 0;
+
+        // Generate white noise (for mechanical sounds)
+        class WhiteNoiseGenerator {
+            constructor(context) {
+                this.context = context;
+                this.buffer = this.context.createBuffer(1, this.context.sampleRate * 2, this.context.sampleRate);
+                let output = this.buffer.getChannelData(0);
+                for (let i = 0; i < this.buffer.length; i++) {
+                    output[i] = Math.random() * 2 - 1;
+                }
+            }
+
+            play(time, duration, gain) {
+                const source = this.context.createBufferSource();
+                const gainNode = this.context.createGain();
+                
+                source.buffer = this.buffer;
+                source.loop = true;
+                source.connect(gainNode);
+                gainNode.connect(mechanicalGain);
+                
+                gainNode.gain.setValueAtTime(gain, time);
+                gainNode.gain.linearRampToValueAtTime(0, time + duration);
+                
+                source.start(time);
+                source.stop(time + duration);
+            }
+        }
+
+        let noiseGenerator;
 
         // Initialize audio context and synthetic engine
         async function initAudio() {
@@ -258,44 +318,62 @@
             masterGain.gain.value = 0;
             masterGain.connect(audioContext.destination);
 
-            // Create multiple oscillators for realistic engine harmonics
+            // Mechanical sounds (valve clatter, compression noise)
+            mechanicalGain = audioContext.createGain();
+            mechanicalGain.gain.value = 0;
+            mechanicalGain.connect(masterGain);
+
+            // Backfire/pop channel (compression release)
+            backfireGain = audioContext.createGain();
+            backfireGain.gain.value = 0;
+            backfireGain.connect(masterGain);
+
+            noiseGenerator = new WhiteNoiseGenerator(audioContext);
+
+            // Create oscillators for core engine sound (4-cylinder)
             const frequencies = [
-                BASE_FREQUENCY * 1,      // Fundamental
-                BASE_FREQUENCY * 2,      // 2nd harmonic
-                BASE_FREQUENCY * 3,      // 3rd harmonic (adds richness)
-                BASE_FREQUENCY * 0.5,    // Sub-bass for rumble
+                BASE_FREQUENCIES.subBass,     // Sub-bass rumble (0.5x)
+                BASE_FREQUENCIES.fundamental, // Main tone (1x)
+                BASE_FREQUENCIES.harmonic2,   // 2x harmonic
+                BASE_FREQUENCIES.harmonic3,   // 3x harmonic
+                BASE_FREQUENCIES.firing,      // Firing pulse (adds mechanical feel)
             ];
 
-            const gains = [0.6, 0.3, 0.15, 0.2]; // Relative amplitudes
+            const baseGains = [0.25, 0.5, 0.25, 0.12, 0.15]; // Relative amplitudes
 
             frequencies.forEach((freq, idx) => {
                 const osc = audioContext.createOscillator();
-                osc.type = 'sine';
+                osc.type = idx === 4 ? 'square' : 'sine'; // Square wave for firing adds punch
                 osc.frequency.value = freq;
 
                 const gain = audioContext.createGain();
-                gain.gain.value = gains[idx];
+                gain.gain.value = baseGains[idx];
 
                 osc.connect(gain);
                 gain.connect(masterGain);
 
                 osc.start();
-                oscillators.push(osc);
-                gainNodes.push(gain);
+                engineOscillators.push(osc);
+                engineGains.push(gain);
             });
 
+            // Mechanical valve clatter (initial noise burst)
+            noiseGenerator.play(audioContext.currentTime + 0.1, 0.15, 0.2);
+
             isEngineRunning = true;
+            smoothedRPM = MIN_RPM;
+            previousRPM = MIN_RPM;
             updateUI();
         }
 
         // Stop audio and cleanup
         function stopAudio() {
             if (audioContext) {
-                oscillators.forEach(osc => {
+                engineOscillators.forEach(osc => {
                     try { osc.stop(); } catch (e) {}
                 });
-                oscillators = [];
-                gainNodes = [];
+                engineOscillators = [];
+                engineGains = [];
                 audioContext.close();
                 audioContext = null;
             }
@@ -303,8 +381,51 @@
             currentAcceleration = 0;
             currentRotation = 0;
             motionIntensity = 0;
-            smoothedRPM = 0;
+            smoothedRPM = MIN_RPM;
+            previousRPM = MIN_RPM;
             updateUI();
+        }
+
+        // Auto-shift gears based on RPM
+        function updateGear() {
+            const rpmPercent = (smoothedRPM - MIN_RPM) / RPM_RANGE;
+            
+            if (rpmPercent > 0.85 && currentGear < 5) {
+                currentGear++;
+            } else if (rpmPercent < 0.5 && currentGear > 1) {
+                currentGear--;
+            }
+        }
+
+        // Trigger backfire/pop sound
+        function triggerBackfire() {
+            if (!audioContext) return;
+
+            const now = audioContext.currentTime;
+            if (now - lastBackfireTime < 0.15) return; // Debounce
+
+            lastBackfireTime = now;
+
+            // Create a sharp pop using filtered noise
+            const noise = audioContext.createBufferSource();
+            const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.05, audioContext.sampleRate);
+            const data = buffer.getChannelData(0);
+            
+            for (let i = 0; i < buffer.length; i++) {
+                data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (buffer.length / 3));
+            }
+
+            noise.buffer = buffer;
+            
+            const noisegain = audioContext.createGain();
+            noisegain.gain.setValueAtTime(0.4, now);
+            noisegain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+            
+            noise.connect(noisegain);
+            noisegain.connect(backfireGain);
+            
+            noise.start(now);
+            noise.stop(now + 0.08);
         }
 
         // Process motion sensor data
@@ -327,53 +448,89 @@
                 Math.pow(rotation.gamma || 0, 2)
             );
 
-            // Apply smoothing (low-pass filter)
+            // Apply smoothing
             currentAcceleration = currentAcceleration * (1 - MOTION_SMOOTH) + 
                                   accelMagnitude * MOTION_SMOOTH;
             currentRotation = currentRotation * (1 - MOTION_SMOOTH) + 
                              rotationMagnitude * MOTION_SMOOTH;
 
-            // Calculate combined motion intensity (0-1)
-            const accelIntensity = Math.min(currentAcceleration / 15, 1);
-            const rotationIntensity = Math.min(currentRotation / 300, 1);
+            // Calculate motion intensity (0-1)
+            const accelIntensity = Math.min(currentAcceleration / 12, 1);
+            const rotationIntensity = Math.min(currentRotation / 250, 1);
             motionIntensity = Math.max(accelIntensity, rotationIntensity);
 
-            // Calculate RPM based on motion intensity (0-9000 RPM)
-            const targetRPM = motionIntensity * 9000;
-            smoothedRPM = smoothedRPM * 0.7 + targetRPM * 0.3;
+            // Calculate target RPM (1200-8000)
+            const targetRPM = MIN_RPM + (motionIntensity * RPM_RANGE);
 
-            // Update audio parameters
+            // Smooth RPM with realistic acceleration/deceleration
+            let rpmDelta = (targetRPM - smoothedRPM) / RPM_RANGE;
+            const smoothFactor = rpmDelta > 0 ? RPM_ACCELERATION : RPM_DECELERATION;
+            smoothedRPM = smoothedRPM + (targetRPM - smoothedRPM) * smoothFactor;
+
+            // Backfire logic: occurs on deceleration from high RPM
+            if (previousRPM > 6000 && motionIntensity < BACKFIRE_THRESHOLD) {
+                backfireChance += 0.05;
+                if (Math.random() < backfireChance) {
+                    triggerBackfire();
+                    backfireChance = 0;
+                }
+            } else {
+                backfireChance = 0;
+            }
+
+            previousRPM = smoothedRPM;
+            updateGear();
             updateEngineSound();
         }
 
         // Update engine sound parameters
         function updateEngineSound() {
-            if (!audioContext || oscillators.length === 0) return;
+            if (!audioContext || engineOscillators.length === 0) return;
 
-            // Scale frequency based on RPM (higher RPM = higher pitch)
-            const frequencyMultiplier = 1 + (smoothedRPM / 9000) * 0.8;
+            // RPM to frequency mapping
+            const rpmPercent = (smoothedRPM - MIN_RPM) / RPM_RANGE;
+            const gearData = GEAR_RATIOS[currentGear];
+            
+            // Frequency scaling with gear consideration
+            const frequencyMultiplier = gearData.freqMultiplier * (0.8 + rpmPercent * 1.2);
 
-            oscillators.forEach((osc, idx) => {
-                const baseFreq = [
-                    BASE_FREQUENCY * 1,
-                    BASE_FREQUENCY * 2,
-                    BASE_FREQUENCY * 3,
-                    BASE_FREQUENCY * 0.5,
-                ][idx];
+            // Update oscillator frequencies
+            const baseFreqs = [
+                BASE_FREQUENCIES.subBass,
+                BASE_FREQUENCIES.fundamental,
+                BASE_FREQUENCIES.harmonic2,
+                BASE_FREQUENCIES.harmonic3,
+                BASE_FREQUENCIES.firing,
+            ];
 
-                osc.frequency.setTargetAtTime(
-                    baseFreq * frequencyMultiplier,
-                    audioContext.currentTime,
-                    0.05
-                );
+            engineOscillators.forEach((osc, idx) => {
+                const newFreq = baseFreqs[idx] * frequencyMultiplier;
+                osc.frequency.setTargetAtTime(newFreq, audioContext.currentTime, 0.03);
             });
 
-            // Update volume based on motion intensity
-            // Add slight variation for realism
-            const volumeVariation = 0.5 + 0.5 * Math.sin(audioContext.currentTime * 2);
-            const targetGain = motionIntensity * 0.8 * (0.7 + 0.3 * volumeVariation);
+            // Volume dynamics
+            const baseVolume = 0.4 + (rpmPercent * 0.5);
+            const gearVolumeBoost = gearData.volumeBoost;
+            
+            // Mechanical clatter increases with RPM
+            const mechanicalIntensity = rpmPercent * 0.25;
+            mechanicalGain.gain.setTargetAtTime(
+                mechanicalIntensity,
+                audioContext.currentTime,
+                0.05
+            );
+
+            // Master volume with gear consideration
+            const targetMasterVolume = baseVolume * gearVolumeBoost;
             masterGain.gain.setTargetAtTime(
-                targetGain,
+                targetMasterVolume,
+                audioContext.currentTime,
+                0.08
+            );
+
+            // Backfire volume
+            backfireGain.gain.setTargetAtTime(
+                0,
                 audioContext.currentTime,
                 0.1
             );
@@ -383,7 +540,7 @@
         function updateUI() {
             if (isEngineRunning) {
                 statusDot.classList.add('active');
-                statusText.innerText = 'Engine: RUNNING';
+                statusText.innerText = `Engine: RUNNING (Gear ${currentGear})`;
                 engineBtn.classList.add('running');
                 engineBtn.innerText = 'STOP\nENGINE';
             } else {
@@ -396,8 +553,9 @@
             rpmValue.innerText = Math.round(smoothedRPM).toLocaleString();
             accelValue.innerText = currentAcceleration.toFixed(2) + ' m/s²';
             rotationValue.innerText = currentRotation.toFixed(2) + ' rad/s';
-            intensityValue.innerText = (motionIntensity * 100).toFixed(0) + '%';
-            volumeValue.innerText = (motionIntensity * 100).toFixed(0) + '%';
+            const rpmPercent = ((smoothedRPM - MIN_RPM) / RPM_RANGE * 100);
+            intensityValue.innerText = rpmPercent.toFixed(0) + '%';
+            volumeValue.innerText = rpmPercent.toFixed(0) + '%';
         }
 
         // Request motion permission and start listening
@@ -409,7 +567,7 @@
                         const permission = await DeviceMotionEvent.requestPermission();
                         if (permission === 'granted') {
                             window.addEventListener('devicemotion', handleMotion);
-                            infoBox.innerHTML = '<div class="warning">✓ Motion sensors active</div>';
+                            infoBox.innerHTML = '<div class="warning">✓ Motion sensors active | Gears: Auto 1-5 | RPM: 1200-8000</div>';
                         } else {
                             infoBox.innerHTML = '<div class="warning">✗ Motion permission denied</div>';
                         }
@@ -419,7 +577,7 @@
                 } else {
                     // Other devices
                     window.addEventListener('devicemotion', handleMotion);
-                    infoBox.innerHTML = '<div class="warning">✓ Motion sensors active</div>';
+                    infoBox.innerHTML = '<div class="warning">✓ Motion sensors active | Gears: Auto 1-5 | RPM: 1200-8000</div>';
                 }
             } else {
                 infoBox.innerHTML = '<div class="warning">✗ Device motion not supported</div>';
@@ -449,9 +607,12 @@
         updateUI();
 
         // Log support info
+        console.log('🏍️ Vroom Vroom Engine Simulator');
+        console.log('RPM Range: 1200-8000 (4-Cylinder Mid-Stroke)');
+        console.log('Gears: 5 (Auto-shifting)');
+        console.log('Features: Backfire, Mechanical Clatter, Realistic Dynamics');
         console.log('Browser Audio Context:', window.AudioContext ? 'Supported' : 'Not Supported');
         console.log('Device Motion:', typeof DeviceMotionEvent !== 'undefined' ? 'Supported' : 'Not Supported');
-        console.log('Web Bluetooth:', typeof navigator.bluetooth !== 'undefined' ? 'Supported' : 'Not Supported');
     </script>
 </body>
 </html>
