@@ -208,6 +208,16 @@
                 <span class="stat-label">Volume</span>
                 <span class="stat-value green" id="volumeValue">0%</span>
             </div>
+
+            <div class="stat-row">
+                <span class="stat-label">Horsepower</span>
+                <span class="stat-value green" id="horsepowerValue">0</span>
+            </div>
+
+            <div class="stat-row">
+                <span class="stat-label">Braking</span>
+                <span class="stat-value blue" id="brakingValue">0%</span>
+            </div>
         </div>
 
         <div class="info-box" id="infoBox">
@@ -229,6 +239,8 @@
         const rotationValue = document.getElementById('rotationValue');
         const intensityValue = document.getElementById('intensityValue');
         const volumeValue = document.getElementById('volumeValue');
+        const horsepowerValue = document.getElementById('horsepowerValue');
+        const brakingValue = document.getElementById('brakingValue');
         const infoBox = document.getElementById('infoBox');
 
         let audioContext;
@@ -245,19 +257,31 @@
         let motionIntensity = 0;
         let smoothedRPM = 1200; // Start at idle RPM
         let previousRPM = 1200;
+        let previousMotionIntensity = 0;
+        let brakeIntensity = 0;
         let currentGear = 1;
+        let isStarting = false;
+        let lastGearShiftTime = 0;
 
         // Engine Constants - 4-Cylinder Mid-Stroke Engine
         const MIN_RPM = 1200;     // Idle RPM
         const MAX_RPM = 8000;     // Red line RPM
         const RPM_RANGE = MAX_RPM - MIN_RPM;
         const UPDATE_RATE = 50;   // ms
-        const MOTION_SMOOTH = 0.4; // Lower = more responsive (increased for less jitter sensitivity)
-        const RPM_ACCELERATION = 0.04; // How fast RPM climbs (slower = more realistic)
-        const RPM_DECELERATION = 0.05; // How fast RPM drops
+        const MOTION_SMOOTH = 0.45; // More smoothing for stable cruiser feel
+        const RPM_ACCELERATION = 0.03; // Very slow RPM climb for realistic throttle
+        const RPM_DECELERATION = 0.035; // Slow RPM drop after letting throttle off
         const BACKFIRE_THRESHOLD = 0.3; // Motion threshold for backfire
-        const ACCEL_DEADZONE = 1.5;  // Ignore accelerations below this (m/s²)
-        const ROTATION_DEADZONE = 50; // Ignore rotations below this (rad/s)
+        const ACCEL_DEADZONE = 2.5;  // Ignore accelerations below this (m/s²)
+        const ROTATION_DEADZONE = 80; // Ignore rotations below this (rad/s)
+        const ACCEL_SCALE = 22;
+        const ROTATION_SCALE = 420;
+        const GEAR_SHIFT_COOLDOWN = 0.8; // seconds between shifts
+        const MIN_UPSHIFT_INTENSITY = 0.22; // require real acceleration before shifting up
+        const MIN_GEAR_HOLD = 1; // start in first gear only
+        const STARTER_DURATION = 0.8; // seconds
+        const MAX_HORSEPOWER = 20; // TVS Ronin-like power
+        const BRAKE_DECAY = 0.92;
         
         // Gear ratios - affects sound tone and responsiveness
         const GEAR_RATIOS = {
@@ -268,17 +292,20 @@
             5: { freqMultiplier: 1.12, volumeBoost: 0.8, torque: 0.8 }
         };
 
-        // Base frequencies for 4-cylinder engine (fire order adds personality)
+        // Base frequencies for cruiser bobber sound
         const BASE_FREQUENCIES = {
-            fundamental: 120,  // Main engine note
-            harmonic2: 240,    // 2x harmonic
-            harmonic3: 360,    // 3x harmonic
-            subBass: 60,       // Deep rumble
-            firing: 200        // Firing frequency (4-cyl = 2x crankshaft)
+            fundamental: 90,   // Deep cruiser note
+            harmonic2: 180,    // 2x harmonic
+            harmonic3: 270,    // 3x harmonic
+            subBass: 50,       // Deep rumble
+            firing: 110        // Firing pulse feels deeper
         };
 
         let lastBackfireTime = 0;
         let backfireChance = 0;
+
+        const GEAR_UP_THRESHOLDS = [0.90, 0.93, 0.96, 0.98];
+        const GEAR_DOWN_THRESHOLDS = [0.38, 0.42, 0.46, 0.5];
 
         // Generate white noise (for mechanical sounds)
         class WhiteNoiseGenerator {
@@ -334,18 +361,19 @@
 
             // Create oscillators for core engine sound (4-cylinder)
             const frequencies = [
-                BASE_FREQUENCIES.subBass,     // Sub-bass rumble (0.5x)
-                BASE_FREQUENCIES.fundamental, // Main tone (1x)
-                BASE_FREQUENCIES.harmonic2,   // 2x harmonic
-                BASE_FREQUENCIES.harmonic3,   // 3x harmonic
-                BASE_FREQUENCIES.firing,      // Firing pulse (adds mechanical feel)
+                BASE_FREQUENCIES.subBass,
+                BASE_FREQUENCIES.fundamental,
+                BASE_FREQUENCIES.harmonic2,
+                BASE_FREQUENCIES.harmonic3,
+                BASE_FREQUENCIES.firing,
             ];
 
-            const baseGains = [0.25, 0.5, 0.25, 0.12, 0.15]; // Relative amplitudes
+            const baseGains = [0.35, 0.55, 0.22, 0.12, 0.18];
+            const waveTypes = ['sine', 'triangle', 'sawtooth', 'triangle', 'square'];
 
             frequencies.forEach((freq, idx) => {
                 const osc = audioContext.createOscillator();
-                osc.type = idx === 4 ? 'square' : 'sine'; // Square wave for firing adds punch
+                osc.type = waveTypes[idx];
                 osc.frequency.value = freq;
 
                 const gain = audioContext.createGain();
@@ -359,13 +387,52 @@
                 engineGains.push(gain);
             });
 
-            // Mechanical valve clatter (initial noise burst)
-            noiseGenerator.play(audioContext.currentTime + 0.1, 0.15, 0.2);
+            // Mechanical valve clatter and chain noise
+            noiseGenerator.play(audioContext.currentTime + 0.1, 0.18, 0.18);
+            noiseGenerator.play(audioContext.currentTime + 0.3, 0.12, 0.1);
 
-            isEngineRunning = true;
             smoothedRPM = MIN_RPM;
             previousRPM = MIN_RPM;
             updateUI();
+        }
+
+        function playStarterSound() {
+            return new Promise(resolve => {
+                const now = audioContext.currentTime;
+                const starterOsc = audioContext.createOscillator();
+                const starterGain = audioContext.createGain();
+
+                starterOsc.type = 'sawtooth';
+                starterOsc.frequency.setValueAtTime(30, now);
+                starterGain.gain.setValueAtTime(0, now);
+                starterGain.gain.linearRampToValueAtTime(0.4, now + 0.12);
+                starterGain.gain.exponentialRampToValueAtTime(0.01, now + STARTER_DURATION);
+
+                starterOsc.connect(starterGain);
+                starterGain.connect(audioContext.destination);
+
+                starterOsc.start(now);
+                starterOsc.stop(now + STARTER_DURATION);
+
+                setTimeout(() => {
+                    resolve();
+                }, STARTER_DURATION * 1000);
+            });
+        }
+
+        async function startEngineSequence() {
+            engineBtn.disabled = true;
+            statusText.innerText = 'STARTING...';
+            engineBtn.innerText = 'STARTING';
+
+            await playStarterSound();
+            isEngineRunning = true;
+            currentGear = 1;
+            smoothedRPM = MIN_RPM;
+            previousRPM = MIN_RPM;
+            updateEngineSound();
+            updateUI();
+            engineBtn.disabled = false;
         }
 
         // Stop audio and cleanup
@@ -385,18 +452,28 @@
             motionIntensity = 0;
             smoothedRPM = MIN_RPM;
             previousRPM = MIN_RPM;
+            currentGear = 1;
             updateUI();
         }
 
-        // Auto-shift gears based on RPM
+        // Auto-shift gears based on RPM and sustained intensity
         function updateGear() {
+            const now = audioContext ? audioContext.currentTime : performance.now() / 1000;
             const rpmPercent = (smoothedRPM - MIN_RPM) / RPM_RANGE;
-            
-            // More realistic thresholds - shift up at 92% RPM, down at 45%
-            if (rpmPercent > 0.92 && currentGear < 5) {
+
+            if (now - lastGearShiftTime < GEAR_SHIFT_COOLDOWN) return;
+
+            // Upshift only when throttle is real and RPM is high
+            if (currentGear < 5 && motionIntensity > MIN_UPSHIFT_INTENSITY && rpmPercent > GEAR_UP_THRESHOLDS[currentGear - 1]) {
                 currentGear++;
-            } else if (rpmPercent < 0.45 && currentGear > 1) {
+                lastGearShiftTime = now;
+                return;
+            }
+
+            // Downshift when RPM falls under the lower gear band
+            if (currentGear > 1 && rpmPercent < GEAR_DOWN_THRESHOLDS[currentGear - 2]) {
                 currentGear--;
+                lastGearShiftTime = now;
             }
         }
 
@@ -451,7 +528,7 @@
                 Math.pow(rotation.gamma || 0, 2)
             );
 
-            // Apply deadzones to filter out noise and minor movements
+            // Apply deadzones to filter out noise and minor movement
             if (accelMagnitude < ACCEL_DEADZONE) accelMagnitude = 0;
             if (rotationMagnitude < ROTATION_DEADZONE) rotationMagnitude = 0;
 
@@ -461,18 +538,27 @@
             currentRotation = currentRotation * (1 - MOTION_SMOOTH) + 
                              rotationMagnitude * MOTION_SMOOTH;
 
-            // Calculate motion intensity (0-1) with higher thresholds
-            const accelIntensity = Math.min(currentAcceleration / 18, 1);
-            const rotationIntensity = Math.min(currentRotation / 350, 1);
-            motionIntensity = Math.max(accelIntensity, rotationIntensity);
+            // Calculate motion intensity using a more realistic response curve
+            const accelIntensity = Math.min((currentAcceleration - ACCEL_DEADZONE) / ACCEL_SCALE, 1);
+            const rotationIntensity = Math.min((currentRotation - ROTATION_DEADZONE) / ROTATION_SCALE, 1);
+            const rawIntensity = Math.max(accelIntensity, rotationIntensity, 0);
+            motionIntensity = Math.pow(rawIntensity, 2) * 0.95;
+
+            if (rawIntensity < 0.18) {
+                motionIntensity = 0;
+            }
+
+            // Braking feels when RPM drops while motion intensity falls quickly
+            const rpmDrop = Math.max(previousRPM - (MIN_RPM + rawIntensity * RPM_RANGE), 0);
+            const intensityDrop = Math.max(previousMotionIntensity - motionIntensity, 0);
+            brakeIntensity = Math.max(brakeIntensity * BRAKE_DECAY, Math.min(1, rpmDrop / 3000 + intensityDrop * 1.2));
 
             // Calculate target RPM (1200-8000)
             const targetRPM = MIN_RPM + (motionIntensity * RPM_RANGE);
 
             // Smooth RPM with realistic acceleration/deceleration
-            let rpmDelta = (targetRPM - smoothedRPM) / RPM_RANGE;
-            const smoothFactor = rpmDelta > 0 ? RPM_ACCELERATION : RPM_DECELERATION;
-            smoothedRPM = smoothedRPM + (targetRPM - smoothedRPM) * smoothFactor;
+            const smoothFactor = targetRPM > smoothedRPM ? RPM_ACCELERATION : RPM_DECELERATION;
+            smoothedRPM += (targetRPM - smoothedRPM) * smoothFactor;
 
             // Backfire logic: occurs on deceleration from high RPM
             if (previousRPM > 6000 && motionIntensity < BACKFIRE_THRESHOLD) {
@@ -486,6 +572,7 @@
             }
 
             previousRPM = smoothedRPM;
+            previousMotionIntensity = motionIntensity;
             updateGear();
             updateEngineSound();
         }
@@ -563,6 +650,8 @@
             const rpmPercent = ((smoothedRPM - MIN_RPM) / RPM_RANGE * 100);
             intensityValue.innerText = rpmPercent.toFixed(0) + '%';
             volumeValue.innerText = rpmPercent.toFixed(0) + '%';
+            horsepowerValue.innerText = Math.round(MAX_HORSEPOWER * motionIntensity * (0.45 + 0.55 * (rpmPercent / 100)));
+            brakingValue.innerText = Math.round(brakeIntensity * 100) + '%';
         }
 
         // Request motion permission and start listening
@@ -575,19 +664,24 @@
                         if (permission === 'granted') {
                             window.addEventListener('devicemotion', handleMotion);
                             infoBox.innerHTML = '<div class="warning">✓ Motion sensors active | Gears: Auto 1-5 | RPM: 1200-8000</div>';
+                            return true;
                         } else {
                             infoBox.innerHTML = '<div class="warning">✗ Motion permission denied</div>';
+                            return false;
                         }
                     } catch (error) {
                         console.error('Permission error:', error);
+                        return false;
                     }
                 } else {
                     // Other devices
                     window.addEventListener('devicemotion', handleMotion);
                     infoBox.innerHTML = '<div class="warning">✓ Motion sensors active | Gears: Auto 1-5 | RPM: 1200-8000</div>';
+                    return true;
                 }
             } else {
                 infoBox.innerHTML = '<div class="warning">✗ Device motion not supported</div>';
+                return false;
             }
         }
 
@@ -596,18 +690,28 @@
 
         // Engine button handler
         engineBtn.addEventListener('click', async () => {
-            if (!isEngineRunning) {
-                try {
-                    await initAudio();
-                    await requestMotionPermission();
-                } catch (error) {
-                    console.error('Initialization error:', error);
-                    infoBox.innerHTML = '<div class="warning">✗ Error initializing audio</div>';
-                }
-            } else {
-                stopAudio();
-                window.removeEventListener('devicemotion', handleMotion);
+            if (isStarting) return;
+
+            if (!audioContext) {
+                await initAudio();
             }
+
+            if (!isEngineRunning) {
+                isStarting = true;
+                engineBtn.disabled = true;
+                const permissionGranted = await requestMotionPermission();
+                if (permissionGranted) {
+                    await startEngineSequence();
+                } else {
+                    infoBox.innerHTML = '<div class="warning">✗ Motion permission required for realistic engine response</div>';
+                }
+                engineBtn.disabled = false;
+                isStarting = false;
+                return;
+            }
+
+            stopAudio();
+            window.removeEventListener('devicemotion', handleMotion);
         });
 
         // Initial UI update
