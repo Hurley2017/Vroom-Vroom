@@ -3,149 +3,455 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>E-Bike Revver</title>
+    <title>Vroom Vroom - E-Bike Engine Simulator</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
-            background-color: #121212;
-            color: white;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             height: 100vh;
-            margin: 0;
             overflow: hidden;
         }
-        #throttleBtn {
-            background-color: #ff3b30;
-            color: white;
-            border: none;
-            border-radius: 50%;
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+            padding: 20px;
+        }
+
+        .title {
+            font-size: 28px;
+            font-weight: bold;
+            text-align: center;
+            letter-spacing: 2px;
+            color: #ff3b30;
+            text-shadow: 0 0 10px rgba(255, 59, 48, 0.5);
+        }
+
+        .engine-button {
             width: 200px;
             height: 200px;
-            font-size: 24px;
+            border-radius: 50%;
+            border: 4px solid #ff3b30;
+            background: radial-gradient(circle at 30% 30%, #ff6b5b, #cc2a1f);
+            color: white;
+            font-size: 20px;
             font-weight: bold;
-            box-shadow: 0 10px 20px rgba(255, 59, 48, 0.4);
-            transition: transform 0.1s;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 0 30px rgba(255, 59, 48, 0.6), inset 0 0 20px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
         }
-        #throttleBtn:active {
+
+        .engine-button:active {
             transform: scale(0.95);
+            box-shadow: 0 0 50px rgba(255, 59, 48, 0.8);
         }
-        #status {
-            margin-top: 30px;
-            font-size: 18px;
-            color: #aaaaaa;
+
+        .engine-button.running {
+            background: radial-gradient(circle at 30% 30%, #34c759, #1fa737);
+            border-color: #34c759;
+            box-shadow: 0 0 30px rgba(52, 199, 89, 0.6), inset 0 0 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .stats-panel {
+            background: rgba(30, 30, 30, 0.9);
+            border: 2px solid #333;
+            border-radius: 15px;
+            padding: 20px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 12px 0;
+            font-size: 14px;
+            padding: 8px 0;
+            border-bottom: 1px solid #444;
+        }
+
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+
+        .stat-label {
+            color: #aaa;
+            font-weight: 600;
+        }
+
+        .stat-value {
+            color: #ff3b30;
+            font-weight: bold;
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .stat-value.green {
+            color: #34c759;
+        }
+
+        .stat-value.blue {
+            color: #00b4ff;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            justify-content: center;
+            font-size: 16px;
+            font-weight: bold;
+            color: #aaa;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #666;
+            animation: none;
+        }
+
+        .status-dot.active {
+            background-color: #34c759;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .info-box {
+            background: rgba(255, 59, 48, 0.1);
+            border-left: 4px solid #ff3b30;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            color: #ccc;
+            width: 100%;
+            max-width: 400px;
+            margin-top: 10px;
+            line-height: 1.5;
+        }
+
+        .warning {
+            color: #ff3b30;
+            font-weight: bold;
+        }
+
+        @media (orientation: portrait) {
+            .title {
+                font-size: 22px;
+            }
+            .engine-button {
+                width: 150px;
+                height: 150px;
+                font-size: 16px;
+            }
         }
     </style>
 </head>
 <body>
+    <div class="container">
+        <div class="title">🏍️ VROOM VROOM</div>
+        
+        <button class="engine-button" id="engineBtn">START<br>ENGINE</button>
 
-    <button id="throttleBtn">START ENGINE</button>
-    <div id="status">Engine: OFF</div>
+        <div class="stats-panel">
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Engine: OFF</span>
+            </div>
+
+            <div class="stat-row">
+                <span class="stat-label">RPM (Throttle)</span>
+                <span class="stat-value" id="rpmValue">0</span>
+            </div>
+
+            <div class="stat-row">
+                <span class="stat-label">Acceleration</span>
+                <span class="stat-value blue" id="accelValue">0.00 m/s²</span>
+            </div>
+
+            <div class="stat-row">
+                <span class="stat-label">Rotation</span>
+                <span class="stat-value blue" id="rotationValue">0.00 rad/s</span>
+            </div>
+
+            <div class="stat-row">
+                <span class="stat-label">Motion Intensity</span>
+                <span class="stat-value green" id="intensityValue">0%</span>
+            </div>
+
+            <div class="stat-row">
+                <span class="stat-label">Volume</span>
+                <span class="stat-value green" id="volumeValue">0%</span>
+            </div>
+        </div>
+
+        <div class="info-box" id="infoBox">
+            <div class="warning">⚠️ Requirements:</div>
+            ✓ HTTPS connection<br>
+            ✓ Mobile device (phone/tablet)<br>
+            ✓ Latest browser (Chrome/Safari)<br>
+            ✓ Pair TWS speakers via Bluetooth<br>
+            ✓ Portrait or landscape orientation
+        </div>
+    </div>
 
     <script>
-        const throttleBtn = document.getElementById('throttleBtn');
-        const statusText = document.getElementById('status');
-        
+        const engineBtn = document.getElementById('engineBtn');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const rpmValue = document.getElementById('rpmValue');
+        const accelValue = document.getElementById('accelValue');
+        const rotationValue = document.getElementById('rotationValue');
+        const intensityValue = document.getElementById('intensityValue');
+        const volumeValue = document.getElementById('volumeValue');
+        const infoBox = document.getElementById('infoBox');
+
         let audioContext;
-        let engineSource;
+        let oscillators = [];
+        let gainNodes = [];
+        let masterGain;
         let isEngineRunning = false;
+        
+        // Motion tracking
+        let currentAcceleration = 0;
+        let currentRotation = 0;
+        let motionIntensity = 0;
+        let smoothedRPM = 0;
 
-        // Replace this URL with a direct link to your looping engine MP3 file
-        const audioUrl = 'https://actions.google.com/sounds/v1/transportation/car_engine_loop.ogg'; 
+        // Constants
+        const BASE_FREQUENCY = 150; // Hz - fundamental engine frequency
+        const UPDATE_RATE = 50; // ms
+        const MOTION_SMOOTH = 0.3; // Low-pass filter factor
 
+        // Initialize audio context and synthetic engine
         async function initAudio() {
-            // iOS requires window.webkitAudioContext
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             audioContext = new AudioContext();
 
-            try {
-                statusText.innerText = "Loading engine sound...";
-                const response = await fetch(audioUrl);
-                const arrayBuffer = await response.arrayBuffer();
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            // Master volume control
+            masterGain = audioContext.createGain();
+            masterGain.gain.value = 0;
+            masterGain.connect(audioContext.destination);
 
-                engineSource = audioContext.createBufferSource();
-                engineSource.buffer = audioBuffer;
-                engineSource.loop = true; // Make the engine sound loop seamlessly
-                engineSource.connect(audioContext.destination);
-                engineSource.start(0);
-                
-                isEngineRunning = true;
-                throttleBtn.innerText = "STOP ENGINE";
-                throttleBtn.style.backgroundColor = "#34c759";
-                statusText.innerText = "Engine: IDLE";
-                
-            } catch (error) {
-                statusText.innerText = "Error loading sound.";
-                console.error(error);
-            }
+            // Create multiple oscillators for realistic engine harmonics
+            const frequencies = [
+                BASE_FREQUENCY * 1,      // Fundamental
+                BASE_FREQUENCY * 2,      // 2nd harmonic
+                BASE_FREQUENCY * 3,      // 3rd harmonic (adds richness)
+                BASE_FREQUENCY * 0.5,    // Sub-bass for rumble
+            ];
+
+            const gains = [0.6, 0.3, 0.15, 0.2]; // Relative amplitudes
+
+            frequencies.forEach((freq, idx) => {
+                const osc = audioContext.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+
+                const gain = audioContext.createGain();
+                gain.gain.value = gains[idx];
+
+                osc.connect(gain);
+                gain.connect(masterGain);
+
+                osc.start();
+                oscillators.push(osc);
+                gainNodes.push(gain);
+            });
+
+            isEngineRunning = true;
+            updateUI();
         }
 
-        async function requestMotionPermission() {
-            // iOS 13+ requires explicit permission to use the accelerometer
-            if (typeof DeviceMotionEvent.requestPermission === 'function') {
-                try {
-                    const permissionState = await DeviceMotionEvent.requestPermission();
-                    if (permissionState === 'granted') {
-                        window.addEventListener('devicemotion', handleMotion);
-                    } else {
-                        statusText.innerText = "Motion permission denied.";
-                    }
-                } catch (error) {
-                    console.error("Error requesting motion permission:", error);
-                }
-            } else {
-                // Non-iOS 13+ devices
-                window.addEventListener('devicemotion', handleMotion);
-            }
-        }
-
-        function handleMotion(event) {
-            if (!isEngineRunning || !engineSource) return;
-
-            // Depending on how you mount the iPhone 11 on the handlebars, 
-            // you may need to use event.acceleration.y or .z
-            let acceleration = event.acceleration.y; 
-            
-            // If the accelerometer returns null, fallback to calculating it using gravity
-            if (acceleration === null) {
-                acceleration = event.accelerationIncludingGravity.y;
-            }
-
-            // Calculate pitch based on acceleration
-            // Using Math.abs so it revs whether accelerating forward or braking hard
-            let pitch = 1.0 + (Math.abs(acceleration) / 10); 
-
-            // Cap the max pitch so it doesn't sound distorted
-            if (pitch > 2.5) pitch = 2.5; 
-
-            // Smoothly change the playback rate (pitch) of the audio
-            engineSource.playbackRate.value = pitch;
-            
-            statusText.innerText = `Pitch: ${pitch.toFixed(2)}x`;
-        }
-
-        throttleBtn.addEventListener('click', () => {
-            if (!isEngineRunning) {
-                // AudioContext MUST be created/resumed upon a user click in iOS
-                initAudio().then(() => {
-                    requestMotionPermission();
+        // Stop audio and cleanup
+        function stopAudio() {
+            if (audioContext) {
+                oscillators.forEach(osc => {
+                    try { osc.stop(); } catch (e) {}
                 });
+                oscillators = [];
+                gainNodes = [];
+                audioContext.close();
+                audioContext = null;
+            }
+            isEngineRunning = false;
+            currentAcceleration = 0;
+            currentRotation = 0;
+            motionIntensity = 0;
+            smoothedRPM = 0;
+            updateUI();
+        }
+
+        // Process motion sensor data
+        function handleMotion(event) {
+            if (!isEngineRunning || !audioContext) return;
+
+            // Get acceleration magnitude
+            const accel = event.acceleration || { x: 0, y: 0, z: 0 };
+            const accelMagnitude = Math.sqrt(
+                Math.pow(accel.x || 0, 2) + 
+                Math.pow(accel.y || 0, 2) + 
+                Math.pow(accel.z || 0, 2)
+            );
+
+            // Get rotation magnitude (gyroscope)
+            const rotation = event.rotationRate || { alpha: 0, beta: 0, gamma: 0 };
+            const rotationMagnitude = Math.sqrt(
+                Math.pow(rotation.alpha || 0, 2) + 
+                Math.pow(rotation.beta || 0, 2) + 
+                Math.pow(rotation.gamma || 0, 2)
+            );
+
+            // Apply smoothing (low-pass filter)
+            currentAcceleration = currentAcceleration * (1 - MOTION_SMOOTH) + 
+                                  accelMagnitude * MOTION_SMOOTH;
+            currentRotation = currentRotation * (1 - MOTION_SMOOTH) + 
+                             rotationMagnitude * MOTION_SMOOTH;
+
+            // Calculate combined motion intensity (0-1)
+            const accelIntensity = Math.min(currentAcceleration / 15, 1);
+            const rotationIntensity = Math.min(currentRotation / 300, 1);
+            motionIntensity = Math.max(accelIntensity, rotationIntensity);
+
+            // Calculate RPM based on motion intensity (0-9000 RPM)
+            const targetRPM = motionIntensity * 9000;
+            smoothedRPM = smoothedRPM * 0.7 + targetRPM * 0.3;
+
+            // Update audio parameters
+            updateEngineSound();
+        }
+
+        // Update engine sound parameters
+        function updateEngineSound() {
+            if (!audioContext || oscillators.length === 0) return;
+
+            // Scale frequency based on RPM (higher RPM = higher pitch)
+            const frequencyMultiplier = 1 + (smoothedRPM / 9000) * 0.8;
+
+            oscillators.forEach((osc, idx) => {
+                const baseFreq = [
+                    BASE_FREQUENCY * 1,
+                    BASE_FREQUENCY * 2,
+                    BASE_FREQUENCY * 3,
+                    BASE_FREQUENCY * 0.5,
+                ][idx];
+
+                osc.frequency.setTargetAtTime(
+                    baseFreq * frequencyMultiplier,
+                    audioContext.currentTime,
+                    0.05
+                );
+            });
+
+            // Update volume based on motion intensity
+            // Add slight variation for realism
+            const volumeVariation = 0.5 + 0.5 * Math.sin(audioContext.currentTime * 2);
+            const targetGain = motionIntensity * 0.8 * (0.7 + 0.3 * volumeVariation);
+            masterGain.gain.setTargetAtTime(
+                targetGain,
+                audioContext.currentTime,
+                0.1
+            );
+        }
+
+        // Update UI display
+        function updateUI() {
+            if (isEngineRunning) {
+                statusDot.classList.add('active');
+                statusText.innerText = 'Engine: RUNNING';
+                engineBtn.classList.add('running');
+                engineBtn.innerText = 'STOP\nENGINE';
             } else {
-                // Stop the engine
-                if (engineSource) {
-                    engineSource.stop();
-                    engineSource.disconnect();
+                statusDot.classList.remove('active');
+                statusText.innerText = 'Engine: OFF';
+                engineBtn.classList.remove('running');
+                engineBtn.innerText = 'START\nENGINE';
+            }
+
+            rpmValue.innerText = Math.round(smoothedRPM).toLocaleString();
+            accelValue.innerText = currentAcceleration.toFixed(2) + ' m/s²';
+            rotationValue.innerText = currentRotation.toFixed(2) + ' rad/s';
+            intensityValue.innerText = (motionIntensity * 100).toFixed(0) + '%';
+            volumeValue.innerText = (motionIntensity * 100).toFixed(0) + '%';
+        }
+
+        // Request motion permission and start listening
+        async function requestMotionPermission() {
+            if (typeof DeviceMotionEvent !== 'undefined') {
+                if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                    // iOS 13+
+                    try {
+                        const permission = await DeviceMotionEvent.requestPermission();
+                        if (permission === 'granted') {
+                            window.addEventListener('devicemotion', handleMotion);
+                            infoBox.innerHTML = '<div class="warning">✓ Motion sensors active</div>';
+                        } else {
+                            infoBox.innerHTML = '<div class="warning">✗ Motion permission denied</div>';
+                        }
+                    } catch (error) {
+                        console.error('Permission error:', error);
+                    }
+                } else {
+                    // Other devices
+                    window.addEventListener('devicemotion', handleMotion);
+                    infoBox.innerHTML = '<div class="warning">✓ Motion sensors active</div>';
                 }
-                isEngineRunning = false;
+            } else {
+                infoBox.innerHTML = '<div class="warning">✗ Device motion not supported</div>';
+            }
+        }
+
+        // UI animation update loop
+        setInterval(updateUI, UPDATE_RATE);
+
+        // Engine button handler
+        engineBtn.addEventListener('click', async () => {
+            if (!isEngineRunning) {
+                try {
+                    await initAudio();
+                    await requestMotionPermission();
+                } catch (error) {
+                    console.error('Initialization error:', error);
+                    infoBox.innerHTML = '<div class="warning">✗ Error initializing audio</div>';
+                }
+            } else {
+                stopAudio();
                 window.removeEventListener('devicemotion', handleMotion);
-                throttleBtn.innerText = "START ENGINE";
-                throttleBtn.style.backgroundColor = "#ff3b30";
-                statusText.innerText = "Engine: OFF";
             }
         });
+
+        // Initial UI update
+        updateUI();
+
+        // Log support info
+        console.log('Browser Audio Context:', window.AudioContext ? 'Supported' : 'Not Supported');
+        console.log('Device Motion:', typeof DeviceMotionEvent !== 'undefined' ? 'Supported' : 'Not Supported');
+        console.log('Web Bluetooth:', typeof navigator.bluetooth !== 'undefined' ? 'Supported' : 'Not Supported');
     </script>
 </body>
 </html>
