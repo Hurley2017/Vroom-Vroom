@@ -248,6 +248,8 @@
         let engineGains = [];
         let filterNode;
         let waveShaper;
+        let pulseOsc;
+        let pulseGain;
         let mechanicalGain;
         let masterGain;
         let backfireGain;
@@ -294,13 +296,13 @@
             5: { freqMultiplier: 1.12, volumeBoost: 0.8, torque: 0.8 }
         };
 
-        // Base frequencies for cruiser bobber sound
+        // Base frequencies tuned for a parallel-twin long-stroke cruiser ('Red Rooster')
         const BASE_FREQUENCIES = {
-            fundamental: 90,   // Deep cruiser note
-            harmonic2: 180,    // 2x harmonic
-            harmonic3: 270,    // 3x harmonic
-            subBass: 50,       // Deep rumble
-            firing: 110        // Firing pulse feels deeper
+            fundamental: 130,   // Strong mid-low cruiser note
+            harmonic2: 260,     // 2x harmonic
+            harmonic3: 390,     // 3x harmonic
+            subBass: 70,        // Deep rumble
+            firing: 140         // Firing pulse frequency
         };
 
         let lastBackfireTime = 0;
@@ -308,6 +310,7 @@
 
         const GEAR_UP_THRESHOLDS = [0.90, 0.93, 0.96, 0.98];
         const GEAR_DOWN_THRESHOLDS = [0.38, 0.42, 0.46, 0.5];
+        const OUTPUT_BOOST = 1.6; // global volume multiplier
 
         // Generate white noise (for mechanical sounds)
         class WhiteNoiseGenerator {
@@ -371,6 +374,50 @@
                 const amount = 10 + newGear * 8;
                 waveShaper.curve = makeDistortionCurve(amount);
             }
+
+            // Add audible shift thump or pop depending on shift direction
+            try {
+                const now = audioContext.currentTime;
+                if (newGear < oldGear) {
+                    // downshift -> stronger pop/backfire
+                    const noise = audioContext.createBufferSource();
+                    const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.06, audioContext.sampleRate);
+                    const data = buffer.getChannelData(0);
+                    for (let i = 0; i < buffer.length; i++) {
+                        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (buffer.length / 4));
+                    }
+                    noise.buffer = buffer;
+                    const ng = audioContext.createGain();
+                    ng.gain.setValueAtTime(0.9, now);
+                    ng.gain.exponentialRampToValueAtTime(0.02, now + 0.12);
+                    noise.connect(ng);
+                    ng.connect(backfireGain);
+                    noise.start(now);
+                    noise.stop(now + 0.12);
+                } else {
+                    // upshift -> small clutch thud
+                    const noise = audioContext.createBufferSource();
+                    const buffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.04, audioContext.sampleRate);
+                    const data = buffer.getChannelData(0);
+                    for (let i = 0; i < buffer.length; i++) {
+                        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (buffer.length / 3));
+                    }
+                    noise.buffer = buffer;
+                    const ng = audioContext.createGain();
+                    ng.gain.setValueAtTime(0.25, now);
+                    ng.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+                    noise.connect(ng);
+                    ng.connect(mechanicalGain);
+                    noise.start(now);
+                    noise.stop(now + 0.08);
+                }
+                // restore waveShaper gently after shift
+                setTimeout(() => {
+                    if (waveShaper) waveShaper.curve = makeDistortionCurve(5);
+                }, 220);
+            } catch (e) {
+                console.error('Shift sound error', e);
+            }
         }
 
         // Initialize audio context and synthetic engine
@@ -418,8 +465,8 @@
                 BASE_FREQUENCIES.firing,
             ];
 
-            const baseGains = [0.35, 0.55, 0.22, 0.12, 0.18];
-            const waveTypes = ['sine', 'triangle', 'sawtooth', 'triangle', 'square'];
+            const baseGains = [0.45, 0.7, 0.3, 0.18, 0.25];
+            const waveTypes = ['sawtooth', 'triangle', 'sawtooth', 'triangle', 'square'];
 
             frequencies.forEach((freq, idx) => {
                 const osc = audioContext.createOscillator();
@@ -439,8 +486,18 @@
             });
 
             // Mechanical valve clatter and chain noise
-            noiseGenerator.play(audioContext.currentTime + 0.1, 0.18, 0.18);
-            noiseGenerator.play(audioContext.currentTime + 0.3, 0.12, 0.1);
+            noiseGenerator.play(audioContext.currentTime + 0.1, 0.18, 0.22);
+            noiseGenerator.play(audioContext.currentTime + 0.3, 0.12, 0.12);
+
+            // Create a pulse oscillator to simulate twin firing pulses (frequency = RPM/60)
+            pulseOsc = audioContext.createOscillator();
+            pulseOsc.type = 'square';
+            pulseGain = audioContext.createGain();
+            pulseGain.gain.value = 0;
+            pulseOsc.connect(pulseGain);
+            // route pulse through filter for timbre consistency
+            pulseGain.connect(filterNode);
+            pulseOsc.start();
 
             smoothedRPM = MIN_RPM;
             previousRPM = MIN_RPM;
@@ -670,11 +727,11 @@
             );
 
             // Master volume with gear consideration
-            const targetMasterVolume = baseVolume * gearVolumeBoost;
+            const targetMasterVolume = baseVolume * gearVolumeBoost * OUTPUT_BOOST;
             masterGain.gain.setTargetAtTime(
                 targetMasterVolume,
                 audioContext.currentTime,
-                0.08
+                0.06
             );
 
             // Backfire volume
@@ -696,6 +753,18 @@
                 // more distortion at higher RPMs
                 const amount = 3 + rpmPercent * 18;
                 waveShaper.curve = makeDistortionCurve(amount);
+            }
+
+            // Pulse oscillator drives the firing rhythm (events/sec = RPM/60)
+            try {
+                if (pulseOsc && pulseGain) {
+                    const pulseFreq = Math.max(0.5, smoothedRPM / 60);
+                    pulseOsc.frequency.setTargetAtTime(pulseFreq, audioContext.currentTime, 0.02);
+                    const pulseLevel = 0.08 + rpmPercent * 0.6; // stronger with RPM
+                    pulseGain.gain.setTargetAtTime(pulseLevel, audioContext.currentTime, 0.03);
+                }
+            } catch (e) {
+                // ignore if not available
             }
         }
 
@@ -788,7 +857,7 @@
 
         // Log support info
         console.log('🏍️ Vroom Vroom Engine Simulator');
-        console.log('RPM Range: 1200-8000 (4-Cylinder Mid-Stroke)');
+        console.log('RPM Range: 1200-8000 (Parallel-twin long-stroke feel)');
         console.log('Gears: 5 (Auto-shifting)');
         console.log('Features: Backfire, Mechanical Clatter, Realistic Dynamics');
         console.log('Browser Audio Context:', window.AudioContext ? 'Supported' : 'Not Supported');
