@@ -246,6 +246,8 @@
         let audioContext;
         let engineOscillators = [];
         let engineGains = [];
+        let filterNode;
+        let waveShaper;
         let mechanicalGain;
         let masterGain;
         let backfireGain;
@@ -337,6 +339,40 @@
 
         let noiseGenerator;
 
+        function makeDistortionCurve(amount) {
+            const k = typeof amount === 'number' ? amount : 50;
+            const samples = 44100;
+            const curve = new Float32Array(samples);
+            const deg = Math.PI / 180;
+            for (let i = 0; i < samples; ++i) {
+                const x = (i * 2) / samples - 1;
+                curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+            }
+            return curve;
+        }
+
+        function applyGearShiftEffect(oldGear, newGear) {
+            if (!audioContext) return;
+            // transient RPM drop to simulate clutch/shift
+            const dropFactor = 0.78 - (newGear - 1) * 0.02; // slightly larger drop in lower gears
+            smoothedRPM = Math.max(MIN_RPM, smoothedRPM * dropFactor);
+
+            // change timbre: tighten bandpass and increase distortion briefly
+            if (filterNode) {
+                const now = audioContext.currentTime;
+                const baseFreq = BASE_FREQUENCIES.fundamental * (GEAR_RATIOS[newGear].freqMultiplier);
+                filterNode.frequency.cancelScheduledValues(now);
+                filterNode.frequency.setTargetAtTime(baseFreq * 2.5, now, 0.05);
+                filterNode.Q.cancelScheduledValues(now);
+                filterNode.Q.setTargetAtTime(8 + newGear * 2, now, 0.05);
+            }
+
+            if (waveShaper) {
+                const amount = 10 + newGear * 8;
+                waveShaper.curve = makeDistortionCurve(amount);
+            }
+        }
+
         // Initialize audio context and synthetic engine
         async function initAudio() {
             const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -359,6 +395,20 @@
 
             noiseGenerator = new WhiteNoiseGenerator(audioContext);
 
+            // Create filter and distortion for 'red-rooster' cruiser timbre
+            filterNode = audioContext.createBiquadFilter();
+            filterNode.type = 'bandpass';
+            filterNode.frequency.value = BASE_FREQUENCIES.fundamental * 2.5;
+            filterNode.Q.value = 6;
+
+            waveShaper = audioContext.createWaveShaper();
+            waveShaper.curve = makeDistortionCurve(5);
+            waveShaper.oversample = '4x';
+
+            // route filter -> waveshaper -> master
+            filterNode.connect(waveShaper);
+            waveShaper.connect(masterGain);
+
             // Create oscillators for core engine sound (4-cylinder)
             const frequencies = [
                 BASE_FREQUENCIES.subBass,
@@ -380,7 +430,8 @@
                 gain.gain.value = baseGains[idx];
 
                 osc.connect(gain);
-                gain.connect(masterGain);
+                // route through filter for timbre shaping
+                gain.connect(filterNode);
 
                 osc.start();
                 engineOscillators.push(osc);
@@ -465,15 +516,19 @@
 
             // Upshift only when throttle is real and RPM is high
             if (currentGear < 5 && motionIntensity > MIN_UPSHIFT_INTENSITY && rpmPercent > GEAR_UP_THRESHOLDS[currentGear - 1]) {
+                const oldGear = currentGear;
                 currentGear++;
                 lastGearShiftTime = now;
+                applyGearShiftEffect(oldGear, currentGear);
                 return;
             }
 
             // Downshift when RPM falls under the lower gear band
             if (currentGear > 1 && rpmPercent < GEAR_DOWN_THRESHOLDS[currentGear - 2]) {
+                const oldGear = currentGear;
                 currentGear--;
                 lastGearShiftTime = now;
+                applyGearShiftEffect(oldGear, currentGear);
             }
         }
 
@@ -628,6 +683,20 @@
                 audioContext.currentTime,
                 0.1
             );
+
+            // Filter and distortion dynamics for 'red-rooster' tone
+            if (filterNode) {
+                const center = BASE_FREQUENCIES.fundamental * (1 + rpmPercent * 2.5) * gearData.freqMultiplier;
+                const q = 4 + rpmPercent * 10 + currentGear;
+                filterNode.frequency.setTargetAtTime(center, audioContext.currentTime, 0.06);
+                filterNode.Q.setTargetAtTime(q, audioContext.currentTime, 0.06);
+            }
+
+            if (waveShaper) {
+                // more distortion at higher RPMs
+                const amount = 3 + rpmPercent * 18;
+                waveShaper.curve = makeDistortionCurve(amount);
+            }
         }
 
         // Update UI display
